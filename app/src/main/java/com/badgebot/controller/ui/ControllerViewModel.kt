@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
  * Bridges the [BleUartManager] to the Compose UI, exposing connection state and
  * the list of discovered devices as observable flows.
  */
-class ControllerViewModel(
+class ControllerViewModel @JvmOverloads constructor(
     application: Application,
     private val bleManager: BleUartManager = BleUartManager(application),
 ) : AndroidViewModel(application) {
