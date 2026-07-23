@@ -26,6 +26,20 @@ data class GroundAnchor(
 
     /** Maps a normalised image point (0..1) to a ground point (metres). */
     fun normalizedImageToGround(p: Vec2): Vec2 = imageToGround.map(p)
+
+    /** The marker centre as a normalised image point (0..1). */
+    fun markerCenterNormalized(): Vec2 = groundToImage.map(Vec2(0.0, 0.0))
+
+    /**
+     * The angle (radians, image convention) of the marker's forward (+x) axis in
+     * the camera image. Rotates with the robot, giving a stable heading
+     * reference independent of the marker's physical mounting orientation.
+     */
+    fun markerForwardAngle(): Double {
+        val c = groundToImage.map(Vec2(0.0, 0.0))
+        val f = groundToImage.map(Vec2(0.05, 0.0))
+        return kotlin.math.atan2(f.y - c.y, f.x - c.x)
+    }
 }
 
 /**

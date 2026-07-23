@@ -24,19 +24,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -51,33 +49,178 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.badgebot.controller.path.DriveTuning
-import com.badgebot.controller.path.GroundPoint
+import com.badgebot.controller.ble.ControlButton
 import com.badgebot.controller.vision.ArucoGroundTracker
 import com.badgebot.controller.vision.CameraFrames
 import com.badgebot.controller.vision.GroundAnchor
 import com.badgebot.controller.vision.Vec2
+import com.badgebot.controller.vision.VisualServoController
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
 /**
- * Camera view that detects a printed ArUco marker, lets the user tap points on
- * the ground to draw a path pinned to the marker, then drives the robot along
- * that path (open-loop) using the planner.
+ * Camera view that detects a printed ArUco marker and lets the user tap points
+ * to draw a path, then follows it with **closed-loop** control: the robot is
+ * tracked by its marker and steered to each point in turn, only advancing once
+ * the marker reaches the current point. Forward/turn directions are learned from
+ * motion, so nothing needs calibrating and a mis-oriented marker is handled.
  *
- * Note: the path is anchored to the ArUco marker (marker-based AR), so it stays
- * pinned while the marker is in view. Overlay alignment assumes the preview
- * fills the view; the drive-tuning and marker-size values can be calibrated
- * from the on-screen panel.
+ * The drawn overlay is pinned to screen positions; keep the camera roughly still
+ * while following (true world-locked AR would require ARCore SLAM).
  */
 @Composable
 fun CameraPathScreen(
-    isDriving: Boolean,
-    onDrive: (List<GroundPoint>, DriveTuning) -> Unit,
-    onStop: () -> Unit,
+    press: (ControlButton) -> Unit,
+    release: (ControlButton) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
+    CameraGate(modifier) {
+        val tracker = remember { ArucoGroundTracker(targetMarkerId = 0) }
+        val anchor by tracker.anchor.collectAsState()
+        val points = remember { mutableStateListOf<Vec2>() }
 
+        val controller = remember(tracker) {
+            VisualServoController(tracker.anchor, press, release)
+        }
+        val scope = rememberCoroutineScope()
+        var driveJob by remember { mutableStateOf<Job?>(null) }
+        var isFollowing by remember { mutableStateOf(false) }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                driveJob?.cancel()
+                controller.stopAll()
+            }
+        }
+
+        CameraPreview(tracker = tracker, modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                PathOverlay(
+                    anchor = anchor,
+                    points = points,
+                    enableTaps = !isFollowing,
+                )
+
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                    modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            when {
+                                isFollowing -> "Following path — tracking marker to each point."
+                                anchor != null -> "Marker detected — tap to add path points."
+                                else -> "Point the camera at printed marker #0."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Spacer(Modifier.size(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (isFollowing) {
+                                Button(onClick = {
+                                    driveJob?.cancel()
+                                    controller.stopAll()
+                                    isFollowing = false
+                                }) { Text("Stop") }
+                            } else {
+                                Button(
+                                    onClick = {
+                                        isFollowing = true
+                                        driveJob = scope.launch {
+                                            controller.resetCalibration()
+                                            try {
+                                                for (i in points.indices) {
+                                                    val reached =
+                                                        controller.driveTo { points.getOrNull(i) }
+                                                    if (!reached) break
+                                                }
+                                            } finally {
+                                                controller.stopAll()
+                                                isFollowing = false
+                                            }
+                                        }
+                                    },
+                                    enabled = anchor != null && points.isNotEmpty(),
+                                ) { Text("Follow path") }
+                            }
+                            OutlinedButton(
+                                onClick = { points.clear() },
+                                enabled = points.isNotEmpty() && !isFollowing,
+                            ) { Text("Clear") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PathOverlay(
+    anchor: GroundAnchor?,
+    points: SnapshotStateList<Vec2>,
+    enableTaps: Boolean,
+) {
+    val currentAnchor by rememberUpdatedState(anchor)
+    val tapsEnabled by rememberUpdatedState(enableTaps)
+
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    if (!tapsEnabled) return@detectTapGestures
+                    points.add(
+                        Vec2(
+                            (offset.x / size.width).toDouble(),
+                            (offset.y / size.height).toDouble(),
+                        ),
+                    )
+                }
+            },
+    ) {
+        val screenPoints = points.map { n ->
+            Offset((n.x * size.width).toFloat(), (n.y * size.height).toFloat())
+        }
+        for (i in 0 until screenPoints.size - 1) {
+            drawLine(
+                color = Color(0xFF4CAF50),
+                start = screenPoints[i],
+                end = screenPoints[i + 1],
+                strokeWidth = 8f,
+            )
+        }
+        screenPoints.forEachIndexed { index, p ->
+            drawCircle(
+                color = if (index == 0) Color(0xFFFFC107) else Color(0xFF4CAF50),
+                radius = 12f,
+                center = p,
+            )
+        }
+        // Live marker (robot) position, so the user can see what is tracked.
+        currentAnchor?.let { a ->
+            val c = a.markerCenterNormalized()
+            drawCircle(
+                color = Color(0xFF2196F3),
+                radius = 14f,
+                center = Offset((c.x * size.width).toFloat(), (c.y * size.height).toFloat()),
+            )
+        }
+    }
+}
+
+/** Requests camera permission, showing a rationale/CTA until it is granted. */
+@Composable
+internal fun CameraGate(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val context = LocalContext.current
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -95,7 +238,7 @@ fun CameraPathScreen(
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                "Camera access is needed to detect the marker and draw a path.",
+                "Camera access is needed to detect the marker and drive.",
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.size(16.dp))
@@ -105,142 +248,11 @@ fun CameraPathScreen(
         }
         return
     }
-
-    val tracker = remember { ArucoGroundTracker(targetMarkerId = 0) }
-    val anchor by tracker.anchor.collectAsState()
-    val waypoints = remember { mutableStateListOf<GroundPoint>() }
-
-    // Calibration values, adjustable at runtime from the panel below.
-    var forwardSpeed by remember { mutableFloatStateOf(0.15f) }
-    var turnRate by remember { mutableFloatStateOf(1.2f) }
-    var markerCm by remember { mutableFloatStateOf(10f) }
-    var showCalibration by remember { mutableStateOf(false) }
-
-    LaunchedEffect(markerCm) {
-        tracker.markerLengthMeters = (markerCm / 100f).toDouble()
-    }
-
-    CameraPreview(tracker = tracker, modifier = modifier.fillMaxSize()) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            PathOverlay(anchor = anchor, waypoints = waypoints)
-
-            Surface(
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-                modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter),
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    if (showCalibration) {
-                        CalibrationPanel(
-                            forwardSpeed = forwardSpeed,
-                            onForwardSpeed = { forwardSpeed = it },
-                            turnRate = turnRate,
-                            onTurnRate = { turnRate = it },
-                            markerCm = markerCm,
-                            onMarkerCm = { markerCm = it },
-                        )
-                        Spacer(Modifier.size(8.dp))
-                    }
-
-                    Text(
-                        if (anchor != null) {
-                            "Marker detected — tap the ground to add path points."
-                        } else {
-                            "Point the camera at printed marker #0."
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Spacer(Modifier.size(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (isDriving) {
-                            Button(onClick = onStop) { Text("Stop") }
-                        } else {
-                            Button(
-                                onClick = {
-                                    onDrive(
-                                        listOf(GroundPoint(0.0, 0.0)) + waypoints,
-                                        DriveTuning(
-                                            forwardSpeedMetersPerSecond = forwardSpeed.toDouble(),
-                                            turnRateRadiansPerSecond = turnRate.toDouble(),
-                                        ),
-                                    )
-                                },
-                                enabled = anchor != null && waypoints.isNotEmpty(),
-                            ) { Text("Drive path") }
-                        }
-                        OutlinedButton(
-                            onClick = { waypoints.clear() },
-                            enabled = waypoints.isNotEmpty() && !isDriving,
-                        ) { Text("Clear") }
-                        TextButton(onClick = { showCalibration = !showCalibration }) {
-                            Text(if (showCalibration) "Hide tuning" else "Tune")
-                        }
-                    }
-                }
-            }
-        }
-    }
+    Box(modifier = modifier.fillMaxSize()) { content() }
 }
 
 @Composable
-private fun CalibrationPanel(
-    forwardSpeed: Float,
-    onForwardSpeed: (Float) -> Unit,
-    turnRate: Float,
-    onTurnRate: (Float) -> Unit,
-    markerCm: Float,
-    onMarkerCm: (Float) -> Unit,
-) {
-    Column {
-        LabeledSlider(
-            label = "Forward speed",
-            valueText = "%.2f m/s".format(forwardSpeed),
-            value = forwardSpeed,
-            valueRange = 0.02f..0.6f,
-            onValueChange = onForwardSpeed,
-        )
-        LabeledSlider(
-            label = "Turn rate",
-            valueText = "%.2f rad/s".format(turnRate),
-            value = turnRate,
-            valueRange = 0.2f..3.0f,
-            onValueChange = onTurnRate,
-        )
-        LabeledSlider(
-            label = "Marker size",
-            valueText = "%.0f cm".format(markerCm),
-            value = markerCm,
-            valueRange = 2f..30f,
-            onValueChange = onMarkerCm,
-        )
-    }
-}
-
-@Composable
-private fun LabeledSlider(
-    label: String,
-    valueText: String,
-    value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit,
-) {
-    Column {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(label, style = MaterialTheme.typography.labelLarge)
-            Text(valueText, style = MaterialTheme.typography.labelLarge)
-        }
-        Slider(value = value, onValueChange = onValueChange, valueRange = valueRange)
-    }
-}
-
-@Composable
-private fun CameraPreview(
+internal fun CameraPreview(
     tracker: ArucoGroundTracker,
     modifier: Modifier = Modifier,
     overlay: @Composable () -> Unit,
@@ -292,60 +304,5 @@ private fun CameraPreview(
     Box(modifier = modifier) {
         AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
         overlay()
-    }
-}
-
-@Composable
-private fun PathOverlay(
-    anchor: GroundAnchor?,
-    waypoints: SnapshotStateList<GroundPoint>,
-) {
-    // The anchor is recreated on every detected frame, so read the latest value
-    // via rememberUpdatedState and key the gesture detector on something stable.
-    // Otherwise the tap detector would restart each frame and never fire.
-    val currentAnchor by rememberUpdatedState(anchor)
-
-    Canvas(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectTapGestures { offset ->
-                    val activeAnchor = currentAnchor ?: return@detectTapGestures
-                    val normalized = Vec2(
-                        (offset.x / size.width).toDouble(),
-                        (offset.y / size.height).toDouble(),
-                    )
-                    val ground = activeAnchor.normalizedImageToGround(normalized)
-                    waypoints.add(GroundPoint(ground.x, ground.y))
-                }
-            },
-    ) {
-        val activeAnchor = currentAnchor ?: return@Canvas
-
-        // Robot starts at the marker origin (0,0), then visits each waypoint.
-        val groundPath = buildList {
-            add(GroundPoint(0.0, 0.0))
-            addAll(waypoints)
-        }
-        val screenPoints = groundPath.map { gp ->
-            val n = activeAnchor.groundToNormalizedImage(Vec2(gp.x, gp.y))
-            Offset((n.x * size.width).toFloat(), (n.y * size.height).toFloat())
-        }
-
-        for (i in 0 until screenPoints.size - 1) {
-            drawLine(
-                color = Color(0xFF4CAF50),
-                start = screenPoints[i],
-                end = screenPoints[i + 1],
-                strokeWidth = 8f,
-            )
-        }
-        screenPoints.forEachIndexed { index, p ->
-            drawCircle(
-                color = if (index == 0) Color(0xFFFFC107) else Color(0xFF4CAF50),
-                radius = if (index == 0) 16f else 12f,
-                center = p,
-            )
-        }
     }
 }

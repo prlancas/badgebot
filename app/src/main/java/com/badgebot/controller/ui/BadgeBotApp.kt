@@ -1,7 +1,6 @@
 package com.badgebot.controller.ui
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,6 +11,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Gamepad
+import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material3.DrawerValue
@@ -49,6 +49,7 @@ private enum class Destination(val title: String, val icon: ImageVector) {
     SERIAL("Serial Console", Icons.AutoMirrored.Filled.List),
     MARKER("Print Marker", Icons.Filled.QrCode2),
     CAMERA("Camera & Path", Icons.Filled.CameraAlt),
+    DRIVE_TO_DOT("Drive to Dot", Icons.Filled.GpsFixed),
 }
 
 @Composable
@@ -95,7 +96,6 @@ private fun ConnectedShell(
 
     val serialEvents by viewModel.serialLog.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
-    val isDriving by viewModel.isDriving.collectAsState()
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -197,9 +197,14 @@ private fun ConnectedShell(
                 Destination.MARKER -> MarkerScreen(modifier = contentModifier)
 
                 Destination.CAMERA -> CameraPathScreen(
-                    isDriving = isDriving,
-                    onDrive = { path, tuning -> viewModel.drivePath(path, tuning) },
-                    onStop = viewModel::stopDriving,
+                    press = viewModel::onButtonPressed,
+                    release = viewModel::onButtonReleased,
+                    modifier = contentModifier,
+                )
+
+                Destination.DRIVE_TO_DOT -> DriveToDotScreen(
+                    press = viewModel::onButtonPressed,
+                    release = viewModel::onButtonReleased,
                     modifier = contentModifier,
                 )
             }
