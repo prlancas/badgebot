@@ -23,7 +23,17 @@ directional arrows.
 
 - Scan for and connect to UART-capable BLE peripherals (Nordic UART Service).
 - A clean, Material 3 control pad with **up / down / left / right** arrows only.
+  Up = forward, Down = backward, Left = turn left, Right = turn right.
 - Sends press **and** release events so the robot can start/stop on hold.
+- Hamburger menu to switch between screens:
+  - **Control Pad** — the driving arrows.
+  - **Serial Console** — view live TX/RX traffic and type/send raw messages.
+  - **Print Marker** — generate and print/share an ArUco (`DICT_4X4_50`) fiducial.
+  - **Camera & Path** — point the camera at the printed marker, tap to draw a
+    ground path pinned to the marker, then auto-drive the robot along it.
+- **Record serial traffic** toggle that works on any screen and exports a
+  timestamped transcript via the share sheet.
+- Works in portrait and landscape (rotation supported).
 - Runtime Bluetooth permission handling for Android 8.0 (API 26) → 15 (API 35).
 - Light/dark theme with dynamic color on Android 12+.
 
@@ -44,15 +54,53 @@ Each button sends an ASCII command followed by a one-byte checksum:
 !B <tag> <state> <crc>
 ```
 
-- `tag` — `5` up, `6` down, `7` left, `8` right
 - `state` — `1` while held, `0` on release
 - `crc` — bitwise-inverted 8-bit sum of the preceding bytes
 
-For example, pressing **Up** sends the bytes `!B51` followed by CRC `0x36`.
-This matches the reference firmware, so an existing Bluefruit robot works
-without changes. The packet-building logic lives in
+The stock Bluefruit numbering is `5` up, `6` down, `7` left, `8` right, but on
+this robot those tags map to different motions. BadgeBot therefore maps each
+on-screen arrow to the tag that produces the **intuitive** movement:
+
+| Arrow | Motion | Tag sent |
+| --- | --- | --- |
+| Up | forward | `7` |
+| Down | backward | `8` |
+| Left | turn left | `5` |
+| Right | turn right | `6` |
+
+For example, pressing **Up** sends the bytes `!B71` followed by its CRC. The
+packet-building logic lives in
 [`UartProtocol.kt`](app/src/main/java/com/badgebot/controller/ble/UartProtocol.kt)
-and is fully covered by unit tests.
+/ [`ControlButton.kt`](app/src/main/java/com/badgebot/controller/ble/ControlButton.kt)
+and is covered by unit tests.
+
+## Camera & Path (marker-anchored AR)
+
+The **Camera & Path** screen uses the phone camera (CameraX) plus OpenCV ArUco
+detection to follow a path:
+
+1. Print marker **#0** (from the *Print Marker* screen) and place it flat where
+   the robot starts, oriented so the marker's "up" is the robot's forward.
+2. Open **Camera & Path** and point the camera at the marker — the printed
+   marker is the world anchor, so the drawn path stays pinned to the ground
+   while the marker is in view.
+3. Tap the ground to add waypoints, then press **Drive path**.
+
+Path following is **open-loop** (no position feedback): waypoints are converted
+to timed forward/turn arrow commands by
+[`PathPlanner`](app/src/main/java/com/badgebot/controller/path/PathPlanner.kt)
+and executed by
+[`PathDriver`](app/src/main/java/com/badgebot/controller/path/PathDriver.kt).
+Two things need calibrating on the real robot for accurate driving:
+
+- **`DriveTuning`** — the robot's forward speed (m/s) and turn rate (rad/s).
+- **Marker size** — `ArucoGroundTracker(markerLengthMeters = …)` must match the
+  printed marker's real side length so distances are to scale.
+
+The homography and path-planning maths are pure Kotlin and unit-tested; the
+camera registration and tuning constants are the parts that require the device
+and robot. (The build ships `arm64-v8a` only to keep the OpenCV native payload
+small — add ABIs in `app/build.gradle.kts` for other devices.)
 
 ## Requirements
 

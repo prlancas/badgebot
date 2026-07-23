@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,13 +16,8 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,68 +32,57 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.badgebot.controller.ble.ControlButton
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The four-arrow driving pad. Up = forward, Down = backward, Left = turn left,
+ * Right = turn right. Buttons report both press and release so the robot can
+ * move while held and stop when released.
+ */
 @Composable
-fun ControlPadScreen(
-    deviceName: String,
+fun ControlPadContent(
     onButtonPressed: (ControlButton) -> Unit,
     onButtonReleased: (ControlButton) -> Unit,
-    onDisconnect: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Scaffold(
-        modifier = modifier,
-        topBar = {
-            TopAppBar(
-                title = { Text("Driving $deviceName") },
-                actions = {
-                    TextButton(onClick = onDisconnect) { Text("Disconnect") }
-                },
-            )
-        },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        DirectionButton(
+            button = ControlButton.UP,
+            icon = Icons.Filled.KeyboardArrowUp,
+            label = "Up",
+            onPressed = onButtonPressed,
+            onReleased = onButtonReleased,
+        )
+        Spacer(Modifier.size(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
             DirectionButton(
-                button = ControlButton.UP,
-                icon = Icons.Filled.KeyboardArrowUp,
-                label = "Up",
+                button = ControlButton.LEFT,
+                icon = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                label = "Left",
                 onPressed = onButtonPressed,
                 onReleased = onButtonReleased,
             )
             Spacer(Modifier.size(16.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                DirectionButton(
-                    button = ControlButton.LEFT,
-                    icon = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                    label = "Left",
-                    onPressed = onButtonPressed,
-                    onReleased = onButtonReleased,
-                )
-                Spacer(Modifier.size(16.dp))
-                DirectionButton(
-                    button = ControlButton.RIGHT,
-                    icon = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    label = "Right",
-                    onPressed = onButtonPressed,
-                    onReleased = onButtonReleased,
-                )
-            }
-            Spacer(Modifier.size(16.dp))
             DirectionButton(
-                button = ControlButton.DOWN,
-                icon = Icons.Filled.KeyboardArrowDown,
-                label = "Down",
+                button = ControlButton.RIGHT,
+                icon = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                label = "Right",
                 onPressed = onButtonPressed,
                 onReleased = onButtonReleased,
             )
         }
+        Spacer(Modifier.size(16.dp))
+        DirectionButton(
+            button = ControlButton.DOWN,
+            icon = Icons.Filled.KeyboardArrowDown,
+            label = "Down",
+            onPressed = onButtonPressed,
+            onReleased = onButtonReleased,
+        )
     }
 }
 

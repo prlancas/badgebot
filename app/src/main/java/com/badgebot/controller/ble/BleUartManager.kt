@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
@@ -39,6 +40,16 @@ class BleUartManager(context: Context) {
 
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
+
+    /** Rolling window of the most recent serial traffic (TX + RX), for display. */
+    private val _serialLog = MutableStateFlow<List<SerialEvent>>(emptyList())
+    val serialLog: StateFlow<List<SerialEvent>> = _serialLog.asStateFlow()
+
+    private val _isRecording = MutableStateFlow(false)
+    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
+
+    private val recordLock = Any()
+    private val recordedEvents = mutableListOf<SerialEvent>()
 
     private var gatt: BluetoothGatt? = null
     private var txCharacteristic: BluetoothGattCharacteristic? = null
@@ -173,6 +184,7 @@ class BleUartManager(context: Context) {
             }
         }
 
+        @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 _connectionState.value = ConnectionState.Error("Service discovery failed")
@@ -185,7 +197,47 @@ class BleUartManager(context: Context) {
                 return
             }
             txCharacteristic = tx
+
+            // Subscribe to RX notifications so incoming serial data is captured.
+            val rx = service.getCharacteristic(BleConstants.UART_RX_CHARACTERISTIC_UUID)
+            if (rx != null) {
+                gatt.setCharacteristicNotification(rx, true)
+                val cccd = rx.getDescriptor(BleConstants.CLIENT_CHARACTERISTIC_CONFIG_UUID)
+                if (cccd != null) {
+                    val enable = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeDescriptor(cccd, enable)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        cccd.value = enable
+                        @Suppress("DEPRECATION")
+                        gatt.writeDescriptor(cccd)
+                    }
+                }
+            }
+
             _connectionState.value = ConnectionState.Connected(connectingName)
+        }
+
+        @Suppress("DEPRECATION")
+        @Deprecated("Used on Android 12 and below")
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+        ) {
+            if (characteristic.uuid == BleConstants.UART_RX_CHARACTERISTIC_UUID) {
+                logEvent(SerialDirection.RX, characteristic.value ?: ByteArray(0))
+            }
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+        ) {
+            if (characteristic.uuid == BleConstants.UART_RX_CHARACTERISTIC_UUID) {
+                logEvent(SerialDirection.RX, value)
+            }
         }
     }
 
@@ -203,6 +255,12 @@ class BleUartManager(context: Context) {
         return writeTx(packet)
     }
 
+    /**
+     * Sends [text] verbatim (UTF-8) to the robot's UART. Returns true if the
+     * write was dispatched.
+     */
+    fun sendRaw(text: String): Boolean = writeTx(text.toByteArray(Charsets.UTF_8))
+
     @SuppressLint("MissingPermission")
     private fun writeTx(data: ByteArray): Boolean {
         val gatt = this.gatt ?: return false
@@ -216,7 +274,7 @@ class BleUartManager(context: Context) {
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         }
 
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val dispatched = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             gatt.writeCharacteristic(characteristic, data, writeType) == BluetoothGatt.GATT_SUCCESS
         } else {
             @Suppress("DEPRECATION")
@@ -226,7 +284,50 @@ class BleUartManager(context: Context) {
             @Suppress("DEPRECATION")
             gatt.writeCharacteristic(characteristic)
         }
+        if (dispatched) {
+            logEvent(SerialDirection.TX, data)
+        }
+        return dispatched
     }
 
     // endregion
+
+    // region Serial log & recording
+
+    private fun logEvent(direction: SerialDirection, data: ByteArray) {
+        if (data.isEmpty()) return
+        val event = SerialEvent(direction, System.currentTimeMillis(), data)
+        _serialLog.update { current ->
+            (current + event).takeLast(MAX_LOG_EVENTS)
+        }
+        if (_isRecording.value) {
+            synchronized(recordLock) { recordedEvents += event }
+        }
+    }
+
+    fun clearSerialLog() {
+        _serialLog.value = emptyList()
+    }
+
+    /** Begins capturing every serial event into the recording buffer. */
+    fun startRecording() {
+        synchronized(recordLock) { recordedEvents.clear() }
+        _isRecording.value = true
+    }
+
+    /** Stops capturing and returns a snapshot of the recorded events. */
+    fun stopRecording(): List<SerialEvent> {
+        _isRecording.value = false
+        return synchronized(recordLock) { recordedEvents.toList() }
+    }
+
+    /** Returns a snapshot of the events recorded so far without stopping. */
+    fun recordingSnapshot(): List<SerialEvent> =
+        synchronized(recordLock) { recordedEvents.toList() }
+
+    // endregion
+
+    companion object {
+        private const val MAX_LOG_EVENTS = 500
+    }
 }

@@ -45,7 +45,7 @@ class UartProtocolTest {
         assertEquals(5, packet.size)
         assertEquals('!'.code.toByte(), packet[0])
         assertEquals('B'.code.toByte(), packet[1])
-        assertEquals('5'.code.toByte(), packet[2]) // UP tag
+        assertEquals('7'.code.toByte(), packet[2]) // UP = forward = tag 7
         assertEquals('1'.code.toByte(), packet[3]) // pressed
         assertEquals(referenceCrc(packet.copyOfRange(0, 4)), packet[4])
     }
@@ -54,7 +54,7 @@ class UartProtocolTest {
     fun controllerPadCommand_released_usesZeroState() {
         val packet = UartProtocol.controllerPadCommand(ControlButton.DOWN, pressed = false)
 
-        assertEquals('6'.code.toByte(), packet[2]) // DOWN tag
+        assertEquals('8'.code.toByte(), packet[2]) // DOWN = backward = tag 8
         assertEquals('0'.code.toByte(), packet[3]) // released
     }
 

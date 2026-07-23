@@ -6,7 +6,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performTouchInput
 import com.badgebot.controller.ble.ControlButton
-import com.badgebot.controller.ui.ControlPadScreen
+import com.badgebot.controller.ui.ControlPadContent
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -19,11 +19,9 @@ class ControlPadScreenTest {
     @Test
     fun allDirectionButtons_areDisplayed() {
         composeRule.setContent {
-            ControlPadScreen(
-                deviceName = "BadgeBot",
+            ControlPadContent(
                 onButtonPressed = {},
                 onButtonReleased = {},
-                onDisconnect = {},
             )
         }
 
@@ -39,11 +37,9 @@ class ControlPadScreenTest {
         val released = mutableListOf<ControlButton>()
 
         composeRule.setContent {
-            ControlPadScreen(
-                deviceName = "BadgeBot",
+            ControlPadContent(
                 onButtonPressed = { pressed += it },
                 onButtonReleased = { released += it },
-                onDisconnect = {},
             )
         }
 
